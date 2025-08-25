@@ -1,0 +1,83 @@
+      warning: incompatible types given to Kernel.+/2:
+
+          last_seq + 1
+
+      given types:
+
+          -dynamic({integer(), integer()})-, integer()
+
+      but expected one of:
+
+          #1
+          integer(), integer()
+
+          #2
+          integer(), float()
+
+          #3
+          float(), integer()
+
+          #4
+          float(), float()
+
+      where "last_seq" was given the type:
+
+          # type: dynamic({integer(), integer()})
+          # from: lib/server.ex:1024:31
+          {last_time, last_seq} = parse_id(last_id)
+
+      typing violation found at:
+      │
+ 1029 │           {:ok, "#{current_time}-#{last_seq + 1}"}
+      │                                             ~
+      │
+      └─ lib/server.ex:1029:45: Server.generate_full_id/1
+
+Server listening on port 6380
+
+19:35:54.522 [info] Configuring dir: 
+
+19:35:54.523 [info] Configuring dbname: 
+
+19:35:54.523 [info] RDB file path is: ./dump.rdb
+
+19:35:54.523 [warning] Could not read RDB file: enoent
+Received command: "*3\r\n$5\r\nBLPOP\r\n$5\r\nlist1\r\n$1\r\n5\r\n"
+Parsed data: ["BLPOP", "list1", "5"]
+
+19:35:54.674 [info] BLPOP request keys=["list1"] timeout="5" client=#Port<0.8> pid=#PID<0.144.0>
+
+19:35:54.674 [info] handle_blpop keys=["list1"] timeout_ms=5000 pid=#PID<0.144.0>
+
+19:35:54.674 [info] ListBlock.pop_or_register_waiter registered(keys+ts) keys=["list1"] ref=#Reference<0.3441372032.2977169410.207791> ts=-576460751472660 pid=#PID<0.144.0>
+
+19:35:54.674 [info] handle_blpop wait ref=#Reference<0.3441372032.2977169410.207791> pid=#PID<0.144.0>
+Received command: "*3\r\n$5\r\nBLPOP\r\n$5\r\nlist1\r\n$1\r\n5\r\n"
+Parsed data: ["BLPOP", "list1", "5"]
+
+19:35:54.854 [info] BLPOP request keys=["list1"] timeout="5" client=#Port<0.9> pid=#PID<0.145.0>
+
+19:35:54.854 [info] handle_blpop keys=["list1"] timeout_ms=5000 pid=#PID<0.145.0>
+
+19:35:54.854 [info] ListBlock.pop_or_register_waiter registered(keys+ts) keys=["list1"] ref=#Reference<0.3441372032.2977169410.207822> ts=-576460751292437 pid=#PID<0.145.0>
+
+19:35:54.854 [info] handle_blpop wait ref=#Reference<0.3441372032.2977169410.207822> pid=#PID<0.145.0>
+Received command: "*3\r\n$5\r\nRPUSH\r\n$5\r\nlist1\r\n$6\r\nvalue1\r\n"
+Parsed data: ["RPUSH", "list1", "value1"]
+
+19:35:55.063 [info] ListBlock.take_waiter key=list1 -> ref=#Reference<0.3441372032.2977169410.207791> remaining=1
+
+19:35:55.063 [info] maybe_unblock_waiter_for_push key=list1 ref=#Reference<0.3441372032.2977169410.207791> waiter_pid=#PID<0.144.0> server_pid=#PID<0.146.0>
+
+19:35:55.064 [info] ListBlock.remove_waiter_by_ref ref=#Reference<0.3441372032.2977169410.207791> removed?=false
+
+19:35:55.064 [info] deliver_to_waiter key=list1 value="value1" ref=#Reference<0.3441372032.2977169410.207791>
+
+19:35:55.064 [info] BLPOP deliver key=list1 value="value1" ref=#Reference<0.3441372032.2977169410.207791> pid=#PID<0.144.0>
+
+19:35:59.854 [info] ListBlock.remove_waiter_by_ref ref=#Reference<0.3441372032.2977169410.207822> removed?=true
+
+19:35:59.855 [info] BLPOP timeout ref=#Reference<0.3441372032.2977169410.207822> removed?=true pid=#PID<0.145.0>
+
+19:35:59.881 [notice] SIGTERM received - shutting down
+
