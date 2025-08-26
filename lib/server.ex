@@ -721,22 +721,32 @@ defmodule Server do
   end
 
   defp execute_command("XADD", [stream_key, id | entry], client) do
-    entry_map = Enum.chunk_every(entry, 2) |> Enum.into(%{}, fn [k, v] -> {k, v} end)
+    if Server.ClientState.in_transaction?(client) do
+      Server.ClientState.add_command(client, ["XADD", stream_key, id | entry])
+      write_line("+QUEUED\r\n", client)
+    else
+      # Validate that we have an even number of field-value pairs
+      if rem(length(entry), 2) != 0 do
+        write_line("-ERR wrong number of arguments for XADD\r\n", client)
+      else
+        entry_map = Enum.chunk_every(entry, 2) |> Enum.into(%{}, fn [k, v] -> {k, v} end)
 
-    case process_id(stream_key, id) do
-      {:ok, final_id} ->
-        result = Server.Streamstore.add_entry(stream_key, final_id, entry_map)
-        response = Server.Protocol.pack(result) |> IO.iodata_to_binary()
-        write_line(response, client)
+        case process_id(stream_key, id) do
+          {:ok, final_id} ->
+            result = Server.Streamstore.add_entry(stream_key, final_id, entry_map)
+            response = Server.Protocol.pack(result) |> IO.iodata_to_binary()
+            write_line(response, client)
 
-      :ok ->
-        result = Server.Streamstore.add_entry(stream_key, id, entry_map)
-        response = Server.Protocol.pack(result) |> IO.iodata_to_binary()
-        write_line(response, client)
+          :ok ->
+            result = Server.Streamstore.add_entry(stream_key, id, entry_map)
+            response = Server.Protocol.pack(result) |> IO.iodata_to_binary()
+            write_line(response, client)
 
-      {:error, message} ->
-        error_response = "-ERR #{message}\r\n"
-        write_line(error_response, client)
+          {:error, message} ->
+            error_response = "-ERR #{message}\r\n"
+            write_line(error_response, client)
+        end
+      end
     end
   end
 
@@ -793,12 +803,22 @@ defmodule Server do
     case Enum.split_while(args, fn arg -> arg != "streams" end) do
       {["block", timeout | _], ["streams" | rest]} ->
         {stream_keys, ids} = Enum.split(rest, div(length(rest), 2))
-        execute_xread_blocking(stream_keys, ids, String.to_integer(timeout), client)
+
+        if length(stream_keys) != length(ids) do
+          write_line("-ERR XREAD streams and IDs count mismatch\r\n", client)
+        else
+          execute_xread_blocking(stream_keys, ids, String.to_integer(timeout), client)
+        end
 
       {_, ["streams" | rest]} ->
         {stream_keys, ids} = Enum.split(rest, div(length(rest), 2))
-        response = execute_xread_default(stream_keys, ids)
-        write_line(response, client)
+
+        if length(stream_keys) != length(ids) do
+          write_line("-ERR XREAD streams and IDs count mismatch\r\n", client)
+        else
+          response = execute_xread_default(stream_keys, ids)
+          write_line(response, client)
+        end
     end
   end
 
@@ -889,9 +909,14 @@ defmodule Server do
   end
 
   defp execute_command("RPUSH", [key | elements], client) do
-    # RPUSH now asks the ListBlock to handle everything.
-    new_len = Server.ListBlock.unblock_or_push(key, elements)
-    write_line(":#{new_len}\r\n", client)
+    if Server.ClientState.in_transaction?(client) do
+      Server.ClientState.add_command(client, ["RPUSH", key | elements])
+      write_line("+QUEUED\r\n", client)
+    else
+      # RPUSH now asks the ListBlock to handle everything.
+      new_len = Server.ListBlock.unblock_or_push(key, elements)
+      write_line(":#{new_len}\r\n", client)
+    end
   end
 
   defp execute_command("LPUSH", [key | elements], client) do
@@ -988,31 +1013,36 @@ defmodule Server do
   end
 
   defp execute_command("ZADD", [key, score_str, member], client) do
-    case Float.parse(score_str) do
-      {score, ""} ->
-        # Successfully parsed as float
-        new_members_added = Server.SortedSetStore.zadd(key, score, member)
-        write_line(":#{new_members_added}\r\n", client)
+    if Server.ClientState.in_transaction?(client) do
+      Server.ClientState.add_command(client, ["ZADD", key, score_str, member])
+      write_line("+QUEUED\r\n", client)
+    else
+      case Float.parse(score_str) do
+        {score, ""} ->
+          # Successfully parsed as float
+          new_members_added = Server.SortedSetStore.zadd(key, score, member)
+          write_line(":#{new_members_added}\r\n", client)
 
-      {score, _remainder} ->
-        # Parsed as float but with remaining characters
-        new_members_added = Server.SortedSetStore.zadd(key, score, member)
-        write_line(":#{new_members_added}\r\n", client)
+        {score, _remainder} ->
+          # Parsed as float but with remaining characters
+          new_members_added = Server.SortedSetStore.zadd(key, score, member)
+          write_line(":#{new_members_added}\r\n", client)
 
-      :error ->
-        # Try parsing as integer
-        case Integer.parse(score_str) do
-          {score, ""} ->
-            new_members_added = Server.SortedSetStore.zadd(key, score * 1.0, member)
-            write_line(":#{new_members_added}\r\n", client)
+        :error ->
+          # Try parsing as integer
+          case Integer.parse(score_str) do
+            {score, ""} ->
+              new_members_added = Server.SortedSetStore.zadd(key, score * 1.0, member)
+              write_line(":#{new_members_added}\r\n", client)
 
-          {score, _remainder} ->
-            new_members_added = Server.SortedSetStore.zadd(key, score * 1.0, member)
-            write_line(":#{new_members_added}\r\n", client)
+            {score, _remainder} ->
+              new_members_added = Server.SortedSetStore.zadd(key, score * 1.0, member)
+              write_line(":#{new_members_added}\r\n", client)
 
-          :error ->
-            write_line("-ERR value is not a valid float\r\n", client)
-        end
+            :error ->
+              write_line("-ERR value is not a valid float\r\n", client)
+          end
+      end
     end
   end
 
@@ -1064,6 +1094,27 @@ defmodule Server do
   defp execute_command("ZREM", [key, member], client) do
     members_removed = Server.SortedSetStore.zrem(key, member)
     write_line(":#{members_removed}\r\n", client)
+  end
+
+  defp execute_command("DEL", keys, client) do
+    if Server.ClientState.in_transaction?(client) do
+      Server.ClientState.add_command(client, ["DEL" | keys])
+      write_line("+QUEUED\r\n", client)
+    else
+      deleted_count =
+        Enum.count(keys, fn key ->
+          case Server.Store.get_value_or_false(key) do
+            {:ok, _} ->
+              Server.Store.delete(key)
+              true
+
+            _ ->
+              false
+          end
+        end)
+
+      write_line(":#{deleted_count}\r\n", client)
+    end
   end
 
   defp execute_command(command, _args, client) do
@@ -1337,9 +1388,13 @@ defmodule Server do
       ["SET" | args] -> execute_set_command(args, client)
       ["GET" | args] -> execute_get_command(args, client)
       ["INCR" | args] -> execute_incr_command(args, client)
+      ["RPUSH" | args] -> execute_rpush_command(args, client)
       ["LRANGE" | args] -> execute_lrange_command(args, client)
       ["LPOP" | args] -> execute_lpop_command(args, client)
       ["LLEN" | args] -> execute_llen_command(args, client)
+      ["DEL" | args] -> execute_del_command(args, client)
+      ["ZADD" | args] -> execute_zadd_command(args, client)
+      ["XADD" | args] -> execute_xadd_command(args, client)
       _ -> "-ERR Unknown command '#{Enum.at(command, 0)}'\r\n"
     end
   end
@@ -1415,6 +1470,75 @@ defmodule Server do
   defp execute_llen_command([key], _client) do
     len = Server.ListStore.llen(key)
     ":#{len}\r\n"
+  end
+
+  defp execute_del_command(keys, _client) do
+    deleted_count =
+      Enum.count(keys, fn key ->
+        case Server.Store.get_value_or_false(key) do
+          {:ok, _} ->
+            Server.Store.delete(key)
+            true
+
+          _ ->
+            false
+        end
+      end)
+
+    ":#{deleted_count}\r\n"
+  end
+
+  defp execute_rpush_command([key | elements], _client) do
+    new_len = Server.ListBlock.unblock_or_push(key, elements)
+    ":#{new_len}\r\n"
+  end
+
+  defp execute_zadd_command([key, score_str, member], _client) do
+    case Float.parse(score_str) do
+      {score, ""} ->
+        # Successfully parsed as float
+        new_members_added = Server.SortedSetStore.zadd(key, score, member)
+        ":#{new_members_added}\r\n"
+
+      {score, _remainder} ->
+        # Parsed as float but with remaining characters
+        new_members_added = Server.SortedSetStore.zadd(key, score, member)
+        ":#{new_members_added}\r\n"
+
+      :error ->
+        # Try parsing as integer
+        case Integer.parse(score_str) do
+          {score, ""} ->
+            new_members_added = Server.SortedSetStore.zadd(key, score * 1.0, member)
+            ":#{new_members_added}\r\n"
+
+          {score, _remainder} ->
+            new_members_added = Server.SortedSetStore.zadd(key, score * 1.0, member)
+            ":#{new_members_added}\r\n"
+
+          :error ->
+            "-ERR value is not a valid float\r\n"
+        end
+    end
+  end
+
+  defp execute_xadd_command([stream_key, id | entry], _client) do
+    entry_map = Enum.chunk_every(entry, 2) |> Enum.into(%{}, fn [k, v] -> {k, v} end)
+
+    case process_id(stream_key, id) do
+      {:ok, final_id} ->
+        result = Server.Streamstore.add_entry(stream_key, final_id, entry_map)
+        response = Server.Protocol.pack(result) |> IO.iodata_to_binary()
+        response
+
+      :ok ->
+        result = Server.Streamstore.add_entry(stream_key, id, entry_map)
+        response = Server.Protocol.pack(result) |> IO.iodata_to_binary()
+        response
+
+      {:error, message} ->
+        "-ERR #{message}\r\n"
+    end
   end
 
   defp write_line(line, client) do

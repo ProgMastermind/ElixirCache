@@ -128,11 +128,28 @@ defmodule Server.Streamstore do
     {start_time, start_seq} = parse_id_with_defaults(start)
     {end_time, end_seq} = parse_id_with_defaults(end_id)
 
+    # Handle partial timestamps: if end_id is a partial timestamp (just time, no sequence),
+    # we should include all entries with that timestamp regardless of sequence
+    {end_time, end_seq} =
+      case String.split(end_id, "-") do
+        # Include all sequences for this timestamp
+        [_time_str] -> {end_time, :max_seq}
+        _ -> {end_time, end_seq}
+      end
+
     Enum.filter(entries, fn {id, _} ->
       {time, seq} = parse_id(id)
 
-      (time > start_time || (time == start_time && seq >= start_seq)) &&
-        (time < end_time || (time == end_time && seq <= end_seq))
+      start_match = time > start_time || (time == start_time && seq >= start_seq)
+
+      end_match =
+        case end_seq do
+          # For partial end timestamps, include all with end_time
+          :max_seq -> time <= end_time
+          _ -> time < end_time || (time == end_time && seq <= end_seq)
+        end
+
+      start_match && end_match
     end)
     # Reverse to get ascending order
     |> Enum.reverse()
