@@ -225,7 +225,7 @@ defmodule Server do
   end
 
   def parse_commands(socket) do
-    case :gen_tcp.recv(socket, 0, 5000) do
+    case :gen_tcp.recv(socket, 0, :infinity) do
       {:ok, data} ->
         Logger.debug("Received data chunk: #{inspect(data)}, bytes: #{byte_size(data)}")
         Server.Bytes.increment_offset(byte_size(data))
@@ -509,9 +509,16 @@ defmodule Server do
   end
 
   # -------------------------------------------------------------------
+  # Replica mode helper
+  def replica_mode?() do
+    config = parse_args()
+    config.replica_of != nil
+  end
+
+  # -------------------------------------------------------------------
   # handling of commands
 
-  defp execute_command_with_config(command, args, client, config) do
+  def execute_command_with_config(command, args, client, config) do
     # Check if client is in subscribed mode and command is restricted
     if Server.PubSub.in_subscribed_mode?(client) and
          not command_allowed_in_subscribed_mode?(command) do
@@ -602,34 +609,39 @@ defmodule Server do
   end
 
   defp execute_command("SET", [key, value | rest], client) do
-    if Server.ClientState.in_transaction?(client) do
-      Server.ClientState.add_command(client, ["SET", key, value | rest])
-      write_line("+QUEUED\r\n", client)
+    if replica_mode?() do
+      write_line("-READONLY You can't write against a read only replica.\r\n", client)
     else
-      try do
-        case rest do
-          [command, time] ->
-            command = String.upcase(to_string(command))
+      if Server.ClientState.in_transaction?(client) do
+        Server.ClientState.add_command(client, ["SET", key, value | rest])
+        write_line("+QUEUED\r\n", client)
+      else
+        try do
+          case rest do
+            [command, time] ->
+              command = String.upcase(to_string(command))
 
-            if command == "PX" do
-              time_ms = String.to_integer(time)
-              Server.Store.update(key, value, time_ms)
-            end
+              if command == "PX" do
+                time_ms = String.to_integer(time)
+                Server.Store.update(key, value, time_ms)
+              end
 
-          [] ->
-            Server.Store.update(key, value)
+            [] ->
+              Server.Store.update(key, value)
+          end
+
+          Server.Pendingwrites.set_pending_writes()
+          write_line("+OK\r\n", client)
+
+          Server.Commandbuffer.add_command(["SET", key, value | rest])
+          # Disable replication for benchmark
+          send_buffered_commands_to_replica()
+
+          :ok
+        catch
+          _ ->
+            write_line("-ERR Internal server error\r\n", client)
         end
-
-        Server.Pendingwrites.set_pending_writes()
-        write_line("+OK\r\n", client)
-
-        # Server.Commandbuffer.add_command(["SET", key, value | rest])
-        # send_buffered_commands_to_replica()  # Disable replication for benchmark
-
-        :ok
-      catch
-        _ ->
-          write_line("-ERR Internal server error\r\n", client)
       end
     end
   end
@@ -658,25 +670,35 @@ defmodule Server do
   end
 
   defp execute_command("INCR", [key], client) do
-    if Server.ClientState.in_transaction?(client) do
-      Server.ClientState.add_command(client, ["INCR", key])
-      write_line("+QUEUED\r\n", client)
+    if replica_mode?() do
+      write_line("-READONLY You can't write against a read only replica.\r\n", client)
     else
-      case Server.Store.get_value_or_false(key) do
-        {:ok, value} ->
-          case Integer.parse(value) do
-            {int_value, _} ->
-              increased_value = int_value + 1
-              Server.Store.update(key, Integer.to_string(increased_value))
-              write_line(":#{increased_value}\r\n", client)
+      if Server.ClientState.in_transaction?(client) do
+        Server.ClientState.add_command(client, ["INCR", key])
+        write_line("+QUEUED\r\n", client)
+      else
+        case Server.Store.get_value_or_false(key) do
+          {:ok, value} ->
+            case Integer.parse(value) do
+              {int_value, _} ->
+                increased_value = int_value + 1
+                Server.Store.update(key, Integer.to_string(increased_value))
+                write_line(":#{increased_value}\r\n", client)
 
-            :error ->
-              write_line("-ERR value is not an integer or out of range\r\n", client)
-          end
+                Server.Commandbuffer.add_command(["INCR", key])
+                send_buffered_commands_to_replica()
 
-        {:error, _reason} ->
-          Server.Store.update(key, "1")
-          write_line(":1\r\n", client)
+              :error ->
+                write_line("-ERR value is not an integer or out of range\r\n", client)
+            end
+
+          {:error, _reason} ->
+            Server.Store.update(key, "1")
+            write_line(":1\r\n", client)
+
+            Server.Commandbuffer.add_command(["INCR", key])
+            send_buffered_commands_to_replica()
+        end
       end
     end
   end
@@ -721,30 +743,40 @@ defmodule Server do
   end
 
   defp execute_command("XADD", [stream_key, id | entry], client) do
-    if Server.ClientState.in_transaction?(client) do
-      Server.ClientState.add_command(client, ["XADD", stream_key, id | entry])
-      write_line("+QUEUED\r\n", client)
+    if replica_mode?() do
+      write_line("-READONLY You can't write against a read only replica.\r\n", client)
     else
-      # Validate that we have an even number of field-value pairs
-      if rem(length(entry), 2) != 0 do
-        write_line("-ERR wrong number of arguments for XADD\r\n", client)
+      if Server.ClientState.in_transaction?(client) do
+        Server.ClientState.add_command(client, ["XADD", stream_key, id | entry])
+        write_line("+QUEUED\r\n", client)
       else
-        entry_map = Enum.chunk_every(entry, 2) |> Enum.into(%{}, fn [k, v] -> {k, v} end)
+        # Validate that we have an even number of field-value pairs
+        if rem(length(entry), 2) != 0 do
+          write_line("-ERR wrong number of arguments for XADD\r\n", client)
+        else
+          entry_map = Enum.chunk_every(entry, 2) |> Enum.into(%{}, fn [k, v] -> {k, v} end)
 
-        case process_id(stream_key, id) do
-          {:ok, final_id} ->
-            result = Server.Streamstore.add_entry(stream_key, final_id, entry_map)
-            response = Server.Protocol.pack(result) |> IO.iodata_to_binary()
-            write_line(response, client)
+          case process_id(stream_key, id) do
+            {:ok, final_id} ->
+              result = Server.Streamstore.add_entry(stream_key, final_id, entry_map)
+              response = Server.Protocol.pack(result) |> IO.iodata_to_binary()
+              write_line(response, client)
 
-          :ok ->
-            result = Server.Streamstore.add_entry(stream_key, id, entry_map)
-            response = Server.Protocol.pack(result) |> IO.iodata_to_binary()
-            write_line(response, client)
+              Server.Commandbuffer.add_command(["XADD", stream_key, id | entry])
+              send_buffered_commands_to_replica()
 
-          {:error, message} ->
-            error_response = "-ERR #{message}\r\n"
-            write_line(error_response, client)
+            :ok ->
+              result = Server.Streamstore.add_entry(stream_key, id, entry_map)
+              response = Server.Protocol.pack(result) |> IO.iodata_to_binary()
+              write_line(response, client)
+
+              Server.Commandbuffer.add_command(["XADD", stream_key, id | entry])
+              send_buffered_commands_to_replica()
+
+            {:error, message} ->
+              error_response = "-ERR #{message}\r\n"
+              write_line(error_response, client)
+          end
         end
       end
     end
@@ -901,36 +933,67 @@ defmodule Server do
   end
 
   defp execute_command("PUBLISH", [channel, message], client) do
-    # Publish message to channel and get the number of subscribers
-    subscriber_count = Server.PubSub.publish(channel, message)
+    if replica_mode?() do
+      write_line("-READONLY You can't write against a read only replica.\r\n", client)
+    else
+      if Server.ClientState.in_transaction?(client) do
+        Server.ClientState.add_command(client, ["PUBLISH", channel, message])
+        write_line("+QUEUED\r\n", client)
+      else
+        # Publish message to channel and get the number of subscribers
+        subscriber_count = Server.PubSub.publish(channel, message)
 
-    # Return the subscriber count as a RESP integer
-    write_line(":#{subscriber_count}\r\n", client)
+        # Return the subscriber count as a RESP integer
+        write_line(":#{subscriber_count}\r\n", client)
+
+        Server.Commandbuffer.add_command(["PUBLISH", channel, message])
+        send_buffered_commands_to_replica()
+      end
+    end
   end
 
   defp execute_command("RPUSH", [key | elements], client) do
-    if Server.ClientState.in_transaction?(client) do
-      Server.ClientState.add_command(client, ["RPUSH", key | elements])
-      write_line("+QUEUED\r\n", client)
+    if replica_mode?() do
+      write_line("-READONLY You can't write against a read only replica.\r\n", client)
     else
-      # RPUSH now asks the ListBlock to handle everything.
-      new_len = Server.ListBlock.unblock_or_push(key, elements)
-      write_line(":#{new_len}\r\n", client)
+      if Server.ClientState.in_transaction?(client) do
+        Server.ClientState.add_command(client, ["RPUSH", key | elements])
+        write_line("+QUEUED\r\n", client)
+      else
+        # RPUSH now asks the ListBlock to handle everything.
+        new_len = Server.ListBlock.unblock_or_push(key, elements)
+        write_line(":#{new_len}\r\n", client)
+
+        Server.Commandbuffer.add_command(["RPUSH", key | elements])
+        send_buffered_commands_to_replica()
+      end
     end
   end
 
   defp execute_command("LPUSH", [key | elements], client) do
-    # For LPUSH, we still use the traditional approach since it pushes to the front
-    # and we need to maintain the blocking semantics properly
-    new_len =
-      case elements do
-        [] -> 0
-        [single] -> Server.ListStore.lpush(key, single)
-        many -> Server.ListStore.lpush_many(key, many)
-      end
+    if replica_mode?() do
+      write_line("-READONLY You can't write against a read only replica.\r\n", client)
+    else
+      if Server.ClientState.in_transaction?(client) do
+        Server.ClientState.add_command(client, ["LPUSH", key | elements])
+        write_line("+QUEUED\r\n", client)
+      else
+        # For LPUSH, we still use the traditional approach since it pushes to the front
+        # and we need to maintain the blocking semantics properly
+        new_len =
+          case elements do
+            [] -> 0
+            [single] -> Server.ListStore.lpush(key, single)
+            many -> Server.ListStore.lpush_many(key, many)
+          end
 
-    maybe_unblock_waiter_for_push(key)
-    write_line(":#{new_len}\r\n", client)
+        maybe_unblock_waiter_for_push(key)
+        write_line(":#{new_len}\r\n", client)
+
+        Server.Commandbuffer.add_command(["LPUSH", key | elements])
+        send_buffered_commands_to_replica()
+      end
+    end
   end
 
   defp execute_command("LRANGE", [key, start_str, stop_str], client) do
@@ -1013,35 +1076,51 @@ defmodule Server do
   end
 
   defp execute_command("ZADD", [key, score_str, member], client) do
-    if Server.ClientState.in_transaction?(client) do
-      Server.ClientState.add_command(client, ["ZADD", key, score_str, member])
-      write_line("+QUEUED\r\n", client)
+    if replica_mode?() do
+      write_line("-READONLY You can't write against a read only replica.\r\n", client)
     else
-      case Float.parse(score_str) do
-        {score, ""} ->
-          # Successfully parsed as float
-          new_members_added = Server.SortedSetStore.zadd(key, score, member)
-          write_line(":#{new_members_added}\r\n", client)
+      if Server.ClientState.in_transaction?(client) do
+        Server.ClientState.add_command(client, ["ZADD", key, score_str, member])
+        write_line("+QUEUED\r\n", client)
+      else
+        case Float.parse(score_str) do
+          {score, ""} ->
+            # Successfully parsed as float
+            new_members_added = Server.SortedSetStore.zadd(key, score, member)
+            write_line(":#{new_members_added}\r\n", client)
 
-        {score, _remainder} ->
-          # Parsed as float but with remaining characters
-          new_members_added = Server.SortedSetStore.zadd(key, score, member)
-          write_line(":#{new_members_added}\r\n", client)
+            Server.Commandbuffer.add_command(["ZADD", key, score_str, member])
+            send_buffered_commands_to_replica()
 
-        :error ->
-          # Try parsing as integer
-          case Integer.parse(score_str) do
-            {score, ""} ->
-              new_members_added = Server.SortedSetStore.zadd(key, score * 1.0, member)
-              write_line(":#{new_members_added}\r\n", client)
+          {score, _remainder} ->
+            # Parsed as float but with remaining characters
+            new_members_added = Server.SortedSetStore.zadd(key, score, member)
+            write_line(":#{new_members_added}\r\n", client)
 
-            {score, _remainder} ->
-              new_members_added = Server.SortedSetStore.zadd(key, score * 1.0, member)
-              write_line(":#{new_members_added}\r\n", client)
+            Server.Commandbuffer.add_command(["ZADD", key, score_str, member])
+            send_buffered_commands_to_replica()
 
-            :error ->
-              write_line("-ERR value is not a valid float\r\n", client)
-          end
+          :error ->
+            # Try parsing as integer
+            case Integer.parse(score_str) do
+              {score, ""} ->
+                new_members_added = Server.SortedSetStore.zadd(key, score * 1.0, member)
+                write_line(":#{new_members_added}\r\n", client)
+
+                Server.Commandbuffer.add_command(["ZADD", key, score_str, member])
+                send_buffered_commands_to_replica()
+
+              {score, _remainder} ->
+                new_members_added = Server.SortedSetStore.zadd(key, score * 1.0, member)
+                write_line(":#{new_members_added}\r\n", client)
+
+                Server.Commandbuffer.add_command(["ZADD", key, score_str, member])
+                send_buffered_commands_to_replica()
+
+              :error ->
+                write_line("-ERR value is not a valid float\r\n", client)
+            end
+        end
       end
     end
   end
@@ -1097,23 +1176,30 @@ defmodule Server do
   end
 
   defp execute_command("DEL", keys, client) do
-    if Server.ClientState.in_transaction?(client) do
-      Server.ClientState.add_command(client, ["DEL" | keys])
-      write_line("+QUEUED\r\n", client)
+    if replica_mode?() do
+      write_line("-READONLY You can't write against a read only replica.\r\n", client)
     else
-      deleted_count =
-        Enum.count(keys, fn key ->
-          case Server.Store.get_value_or_false(key) do
-            {:ok, _} ->
-              Server.Store.delete(key)
-              true
+      if Server.ClientState.in_transaction?(client) do
+        Server.ClientState.add_command(client, ["DEL" | keys])
+        write_line("+QUEUED\r\n", client)
+      else
+        deleted_count =
+          Enum.count(keys, fn key ->
+            case Server.Store.get_value_or_false(key) do
+              {:ok, _} ->
+                Server.Store.delete(key)
+                true
 
-            _ ->
-              false
-          end
-        end)
+              _ ->
+                false
+            end
+          end)
 
-      write_line(":#{deleted_count}\r\n", client)
+        write_line(":#{deleted_count}\r\n", client)
+
+        Server.Commandbuffer.add_command(["DEL" | keys])
+        send_buffered_commands_to_replica()
+      end
     end
   end
 

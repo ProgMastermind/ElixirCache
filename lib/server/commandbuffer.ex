@@ -17,11 +17,19 @@ defmodule Server.Commandbuffer do
     GenServer.call(__MODULE__, :get_and_clear)
   end
 
+  def clear do
+    GenServer.call(__MODULE__, :clear)
+  end
+
   def handle_cast({:add, command}, state) do
     {:noreply, [command | state]}
   end
 
   def handle_call(:get_and_clear, _from, state) do
     {:reply, Enum.reverse(state), []}
+  end
+
+  def handle_call(:clear, _from, _state) do
+    {:reply, :ok, []}
   end
 end

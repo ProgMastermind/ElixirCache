@@ -26,7 +26,6 @@
 #   end
 # end
 
-
 defmodule Server.Clientbuffer do
   use GenServer
 
@@ -50,6 +49,10 @@ defmodule Server.Clientbuffer do
     GenServer.call(__MODULE__, :get_client_count)
   end
 
+  def clear_clients do
+    GenServer.call(__MODULE__, :clear_clients)
+  end
+
   def handle_cast({:add_client, client}, {clients, count}) do
     {:noreply, {[client | clients], count + 1}}
   end
@@ -60,5 +63,9 @@ defmodule Server.Clientbuffer do
 
   def handle_call(:get_client_count, _from, {clients, count}) do
     {:reply, count, {clients, count}}
+  end
+
+  def handle_call(:clear_clients, _from, {_clients, _count}) do
+    {:reply, :ok, {[], 0}}
   end
 end
