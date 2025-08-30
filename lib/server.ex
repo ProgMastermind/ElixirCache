@@ -311,6 +311,24 @@ defmodule Server do
       ["SET" | args] ->
         execute_set_command(["SET" | args])
 
+      ["DEL" | keys] ->
+        execute_del_command(keys)
+
+      ["RPUSH", key | elements] ->
+        execute_rpush_command([key | elements])
+
+      ["LPUSH", key | elements] ->
+        execute_lpush_command([key | elements])
+
+      ["INCR", key] ->
+        execute_incr_command([key])
+
+      ["ZADD", key, score_str, member] ->
+        execute_zadd_command([key, score_str, member])
+
+      ["XADD", stream_key, id | entry] ->
+        execute_xadd_command([stream_key, id | entry])
+
       ["REPLCONF", "GETACK", "*"] ->
         send_replconf_ack(socket)
 
@@ -338,6 +356,104 @@ defmodule Server do
 
       _ ->
         Logger.warning("Unhandled command from the master: #{command}")
+    end
+  end
+
+  # Replica command handlers - simplified versions without client interaction
+  defp execute_del_command(keys) do
+    Enum.each(keys, fn key ->
+      case Server.Store.get_value_or_false(key) do
+        {:ok, _} ->
+          Server.Store.delete(key)
+
+        _ ->
+          # Key doesn't exist, nothing to do
+          :ok
+      end
+    end)
+
+    Logger.info("DEL command executed on replica for #{length(keys)} keys")
+  end
+
+  defp execute_rpush_command([key | elements]) do
+    # For replicas, use the simpler ListStore function
+    Enum.each(elements, fn element ->
+      Server.ListStore.rpush(key, element)
+    end)
+
+    Logger.info("RPUSH command executed on replica for key #{key}")
+  end
+
+  defp execute_lpush_command([key | elements]) do
+    # LPUSH implementation - add to beginning of list
+    Enum.each(elements, fn element ->
+      Server.ListStore.lpush(key, element)
+    end)
+
+    Logger.info("LPUSH command executed on replica for key #{key}")
+  end
+
+  defp execute_incr_command([key]) do
+    case Server.Store.get_value_or_false(key) do
+      {:ok, value} ->
+        case Integer.parse(value) do
+          {int_value, _} ->
+            increased_value = int_value + 1
+            Server.Store.update(key, Integer.to_string(increased_value))
+
+          :error ->
+            Logger.warning("INCR on replica: value is not an integer")
+        end
+
+      {:error, _reason} ->
+        Server.Store.update(key, "1")
+    end
+
+    Logger.info("INCR command executed on replica for key #{key}")
+  end
+
+  defp execute_zadd_command([key, score_str, member]) do
+    case Float.parse(score_str) do
+      {score, ""} ->
+        Server.SortedSetStore.zadd(key, score, member)
+
+      {score, _remainder} ->
+        Server.SortedSetStore.zadd(key, score, member)
+
+      :error ->
+        case Integer.parse(score_str) do
+          {score, ""} ->
+            Server.SortedSetStore.zadd(key, score * 1.0, member)
+
+          {score, _remainder} ->
+            Server.SortedSetStore.zadd(key, score * 1.0, member)
+
+          :error ->
+            Logger.warning("ZADD on replica: invalid score format")
+        end
+    end
+
+    Logger.info("ZADD command executed on replica for key #{key}")
+  end
+
+  defp execute_xadd_command([stream_key, id | entry]) do
+    if rem(length(entry), 2) != 0 do
+      Logger.warning("XADD on replica: wrong number of arguments")
+    else
+      entry_map = Enum.chunk_every(entry, 2) |> Enum.into(%{}, fn [k, v] -> {k, v} end)
+
+      case process_id(stream_key, id) do
+        {:ok, final_id} ->
+          Server.Streamstore.add_entry(stream_key, final_id, entry_map)
+
+        :ok ->
+          Server.Streamstore.add_entry(stream_key, id, entry_map)
+
+        {:error, reason} ->
+          Logger.warning("XADD on replica: invalid ID - #{reason}")
+      end
+
+      Logger.info("XADD command executed on replica for stream #{stream_key}")
     end
   end
 
