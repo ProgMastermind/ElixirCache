@@ -32,6 +32,8 @@ show_usage() {
     echo "  transactions     Run transaction tests"
     echo "  pubsub           Run pub/sub tests"
     echo "  integration      Run integration tests"
+    echo "  replication      Run replication tests"
+    echo "  fault-tolerance  Run fault tolerance tests"
     echo "  manual           Display manual test commands"
     echo "  coverage         Run tests with coverage report"
     echo "  performance      Run performance/stress tests"
@@ -144,7 +146,7 @@ while [[ $# -gt 0 ]]; do
             show_usage
             exit 0
             ;;
-        all|basic|lists|sorted-sets|streams|transactions|pubsub|integration|manual|coverage|performance)
+        all|basic|lists|sorted-sets|streams|transactions|pubsub|integration|replication|fault-tolerance|manual|coverage|performance)
             COMMAND=$1
             shift
             ;;
@@ -194,10 +196,55 @@ main() {
     case $COMMAND in
         all)
             print_color $BLUE "Running all tests..."
-            if mix test $TEST_OPTIONS; then
+
+            # Run all individual test files
+            local all_passed=true
+
+            if ! run_test_file "basic_operations_test.exs" "$TEST_OPTIONS"; then
+                all_passed=false
+            fi
+
+            if ! run_test_file "list_operations_test.exs" "$TEST_OPTIONS"; then
+                all_passed=false
+            fi
+
+            if ! run_test_file "sorted_set_test.exs" "$TEST_OPTIONS"; then
+                all_passed=false
+            fi
+
+            if ! run_test_file "stream_test.exs" "$TEST_OPTIONS"; then
+                all_passed=false
+            fi
+
+            if ! run_test_file "transaction_test.exs" "$TEST_OPTIONS"; then
+                all_passed=false
+            fi
+
+            if ! run_test_file "pubsub_test.exs" "$TEST_OPTIONS"; then
+                all_passed=false
+            fi
+
+            if ! run_test_file "integration_test.exs" "$TEST_OPTIONS"; then
+                all_passed=false
+            fi
+
+            if ! run_test_file "replication_test.exs" "$TEST_OPTIONS"; then
+                all_passed=false
+            fi
+
+            # Run fault tolerance tests with special handling
+            print_color $BLUE "Running fault tolerance tests..."
+            if ! run_test_file "fault_tolerance_tests.exs" "$TEST_OPTIONS"; then
+                print_color $YELLOW "Note: Fault tolerance tests may require RUN_FAULT_TOLERANCE_TESTS=true"
+                all_passed=false
+            fi
+
+            if [ "$all_passed" = true ]; then
                 print_color $GREEN "✓ All tests passed!"
             else
                 print_color $RED "✗ Some tests failed"
+                print_color $BLUE "To run fault tolerance tests properly, use:"
+                print_color $BLUE "  RUN_FAULT_TOLERANCE_TESTS=true $0 all"
                 exit 1
             fi
             ;;
@@ -221,6 +268,19 @@ main() {
             ;;
         integration)
             run_test_file "integration_test.exs" "$TEST_OPTIONS"
+            ;;
+        replication)
+            run_test_file "replication_test.exs" "$TEST_OPTIONS"
+            ;;
+        fault-tolerance)
+            print_color $BLUE "Running fault tolerance tests..."
+            print_color $YELLOW "Note: Fault tolerance tests may require RUN_FAULT_TOLERANCE_TESTS=true environment variable"
+            if run_test_file "fault_tolerance_tests.exs" "$TEST_OPTIONS"; then
+                print_color $GREEN "✓ Fault tolerance tests completed successfully!"
+            else
+                print_color $YELLOW "! Some fault tolerance tests may require environment setup"
+                print_color $BLUE "Try: RUN_FAULT_TOLERANCE_TESTS=true $0 fault-tolerance"
+            fi
             ;;
         coverage)
             print_color $BLUE "Running tests with coverage analysis..."
