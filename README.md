@@ -1,4 +1,4 @@
-# ElixirCache 🚀
+# ElixirCache
 
 A high-performance, fault-tolerant in-memory cache system written in Elixir, featuring Redis-compatible protocol support, master-replica replication, and comprehensive caching operations.
 
@@ -32,7 +32,7 @@ A high-performance, fault-tolerant in-memory cache system written in Elixir, fea
 - **Concurrent Clients**: Handle multiple client connections simultaneously
 - **Error Handling**: Comprehensive error handling with proper Redis-compatible responses
 
-## 🏗️ Architecture
+## Architecture
 
 ### Distributed Cache Architecture
 - **Master-Replica Synchronization**: Redis-compatible replication protocol for cache consistency
@@ -46,7 +46,7 @@ A high-performance, fault-tolerant in-memory cache system written in Elixir, fea
 - **Network Resilience**: Automatic recovery from network partitions
 - **Process Isolation**: Isolated processes prevent cascading cache failures
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### Prerequisites
 - Elixir 1.10 or higher
