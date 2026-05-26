@@ -6,7 +6,7 @@ A high-performance, fault-tolerant in-memory cache system written in Elixir, fea
 [![Elixir](https://img.shields.io/badge/elixir-1.10+-purple)](https://elixir-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-## ✨ Features
+## Features
 
 ### Redis-Compatible Cache Operations
 - **Basic Operations**: `SET`, `GET`, `DEL`, `EXISTS`, `TYPE`, `KEYS`, `INCR`, `DECR`
@@ -86,7 +86,7 @@ mix run -- --port 6379
 mix run -- --port 6380 --replicaof "localhost 6379"
 ```
 
-## 🧪 Testing
+##  Testing
 
 ### Run All Tests
 ```bash
@@ -108,7 +108,7 @@ mix run -- --port 6380 --replicaof "localhost 6379"
 ./run_tests.sh fault-tolerance
 ```
 
-## 📁 Project Structure
+##  Project Structure
 
 ```
 elixir-cache/
@@ -151,7 +151,7 @@ elixir-cache/
 └── README.md                      # This file
 ```
 
-## 🔧 Configuration Options
+##  Configuration Options
 
 ### Cache Server Options
 ```bash
@@ -170,7 +170,7 @@ mix run -- --port 6379 --max-clients 1000 --timeout 300
 - `REDIS_PORT`: Default cache server port (6379)
 - `REDIS_MAX_CLIENTS`: Maximum concurrent clients (default: 1000)
 
-## 🎯 Fault Tolerance Demonstrations
+##  Fault Tolerance Demonstrations
 
 ### 1. Master-Replica Cache Synchronization
 ```bash
@@ -196,7 +196,7 @@ mix run -- --port 6379 --max-clients 1000 --timeout 300
 - Memory usage monitoring
 - Automatic cache resource management
 
-## 🛠️ Development
+##  Development
 
 ### Running Tests
 ```bash
@@ -228,7 +228,7 @@ mix dialyzer
 3. Add comprehensive tests
 4. Update documentation
 
-## 📊 Performance
+##  Performance
 
 ### Cache Benchmarks
 - **Concurrent Clients**: Handles 20000+ concurrent connections
@@ -242,7 +242,7 @@ mix dialyzer
 - **Command Buffering**: Efficient cache replication queuing
 - **Lazy Evaluation**: Optimized cache data structure operations
 
-## 🔍 Monitoring & Debugging
+##  Monitoring & Debugging
 
 ### Cache Server Logs
 ```elixir
@@ -266,7 +266,7 @@ redis-cli -p 6379 ping
 redis-cli -p 6379 info
 ```
 
-## 🤝 Contributing
+##  Contributing
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-cache-feature`)
@@ -283,4 +283,4 @@ redis-cli -p 6379 info
 
 ---
 
-**Built with ❤️ using Elixir - A Redis-Compatible Cache System**
+**Built with Elixir - A Redis-Compatible Cache System**
